@@ -2,13 +2,50 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-
-OUT="$ROOT/out"
 DIST="$ROOT/dist/device_root"
+BUILD_SRC_ROOT="$DIST/_build_src/rknn-llm"
 
-echo "[build] root=$ROOT"
+# Host only stages a minimal device-native build package.
+# No host-side cross compilation is performed.
+RKNN_LLM_SRC_DEFAULT="$ROOT/third_party/rknn-llm"
+RKNN_LLM_SRC="${RKNN_LLM_SRC:-$RKNN_LLM_SRC_DEFAULT}"
 
-mkdir -p "$OUT" "$DIST"
+echo "[stage] root=$ROOT"
+echo "[stage] dist=$DIST"
+
+copy_tree() {
+  local src="$1"
+  local dst="$2"
+  if [ ! -d "$src" ]; then
+    echo "Error: source directory missing: $src" >&2
+    exit 1
+  fi
+  mkdir -p "$dst"
+  cp -a "$src/." "$dst/"
+}
+
+copy_file() {
+  local src="$1"
+  local dst="$2"
+  if [ ! -f "$src" ]; then
+    echo "Error: source file missing: $src" >&2
+    exit 1
+  fi
+  mkdir -p "$(dirname "$dst")"
+  cp -a "$src" "$dst"
+}
+
+patch_multimodal_cmake_include() {
+  local cmake_file="$1"
+  if [ ! -f "$cmake_file" ]; then
+    echo "Error: CMake file missing for patch: $cmake_file" >&2
+    exit 1
+  fi
+
+  # Upstream uses `include_directories(src/image_enc.h ...)`,
+  # which passes a header file as an include directory and causes warnings.
+  perl -0pi -e 's@include_directories\(src/image_enc\.h\s+\$\{LIBRKNNRT_INCLUDES\}\)@include_directories(src \${LIBRKNNRT_INCLUDES})@g' "$cmake_file"
+}
 
 rm -rf "$DIST"
 mkdir -p "$DIST/bin" "$DIST/lib" "$DIST/models"
@@ -19,103 +56,64 @@ if [ ! -d "$ROOT/device_template" ]; then
   exit 1
 fi
 
+if [ ! -d "$RKNN_LLM_SRC" ]; then
+  echo "Error: RKNN LLM source not found: $RKNN_LLM_SRC" >&2
+  echo "Hint: init submodule first: git submodule update --init --recursive" >&2
+  exit 1
+fi
+
 cp -a "$ROOT/device_template/." "$DIST/"
 
 chmod +x "$DIST/run_benchmark.py" "$DIST/env_setup.sh" 2>/dev/null || true
 chmod +x "$DIST/scripts"/*.sh 2>/dev/null || true
 
-# Build/copy demo executables + runtime libs (Host side)
-BUILD_DEMOS_DEFAULT=1
-BUILD_DEMOS="${BUILD_DEMOS:-$BUILD_DEMOS_DEFAULT}"
+echo "[stage] collecting minimal device build sources from: $RKNN_LLM_SRC"
 
-# Optional: provide a checkout of rknn-llm sources to cross-build demo binaries.
-# Default to third_party in THIS repo (recommended once submodule/vendor lands).
-RKNN_LLM_SRC_DEFAULT="$ROOT/third_party/rknn-llm"
-RKNN_LLM_SRC="${RKNN_LLM_SRC:-$RKNN_LLM_SRC_DEFAULT}"
+# 1) Text demo source (official rkllm_api_demo/deploy)
+copy_file \
+  "$RKNN_LLM_SRC/examples/rkllm_api_demo/deploy/CMakeLists.txt" \
+  "$BUILD_SRC_ROOT/examples/rkllm_api_demo/deploy/CMakeLists.txt"
+copy_tree \
+  "$RKNN_LLM_SRC/examples/rkllm_api_demo/deploy/src" \
+  "$BUILD_SRC_ROOT/examples/rkllm_api_demo/deploy/src"
 
-TOOLCHAIN_FILE="$ROOT/host_tools/toolchain-aarch64.cmake"
+# 2) Multimodal demo source (official multimodal_model_demo/deploy)
+copy_file \
+  "$RKNN_LLM_SRC/examples/multimodal_model_demo/deploy/CMakeLists.txt" \
+  "$BUILD_SRC_ROOT/examples/multimodal_model_demo/deploy/CMakeLists.txt"
+patch_multimodal_cmake_include \
+  "$BUILD_SRC_ROOT/examples/multimodal_model_demo/deploy/CMakeLists.txt"
+copy_file \
+  "$RKNN_LLM_SRC/examples/multimodal_model_demo/deploy/c_export.map" \
+  "$BUILD_SRC_ROOT/examples/multimodal_model_demo/deploy/c_export.map"
+copy_tree \
+  "$RKNN_LLM_SRC/examples/multimodal_model_demo/deploy/src" \
+  "$BUILD_SRC_ROOT/examples/multimodal_model_demo/deploy/src"
 
-if [ "$BUILD_DEMOS" = "1" ]; then
-  if [ ! -f "$TOOLCHAIN_FILE" ]; then
-    echo "Error: toolchain file not found: $TOOLCHAIN_FILE" >&2
-    exit 1
-  fi
+# 3) Runtime/build dependencies required by deploy CMakeLists
+copy_tree \
+  "$RKNN_LLM_SRC/examples/multimodal_model_demo/deploy/3rdparty/opencv/opencv-linux-aarch64" \
+  "$BUILD_SRC_ROOT/examples/multimodal_model_demo/deploy/3rdparty/opencv/opencv-linux-aarch64"
+copy_tree \
+  "$RKNN_LLM_SRC/examples/multimodal_model_demo/deploy/3rdparty/librknnrt/Linux/librknn_api/include" \
+  "$BUILD_SRC_ROOT/examples/multimodal_model_demo/deploy/3rdparty/librknnrt/Linux/librknn_api/include"
+copy_tree \
+  "$RKNN_LLM_SRC/examples/multimodal_model_demo/deploy/3rdparty/librknnrt/Linux/librknn_api/aarch64" \
+  "$BUILD_SRC_ROOT/examples/multimodal_model_demo/deploy/3rdparty/librknnrt/Linux/librknn_api/aarch64"
+copy_tree \
+  "$RKNN_LLM_SRC/rkllm-runtime/Linux/librkllm_api/include" \
+  "$BUILD_SRC_ROOT/rkllm-runtime/Linux/librkllm_api/include"
+copy_tree \
+  "$RKNN_LLM_SRC/rkllm-runtime/Linux/librkllm_api/aarch64" \
+  "$BUILD_SRC_ROOT/rkllm-runtime/Linux/librkllm_api/aarch64"
 
-  if [ ! -d "$RKNN_LLM_SRC" ]; then
-    echo "[build] WARN: RKNN_LLM_SRC not found: $RKNN_LLM_SRC"
-    echo "[build]       Set RKNN_LLM_SRC=/path/to/rknn-llm to enable cross-build of demo binaries."
-  else
-    echo "[build] building demos from: $RKNN_LLM_SRC"
+# Pre-stage runtime shared libraries to ./lib for device runtime.
+copy_file \
+  "$BUILD_SRC_ROOT/rkllm-runtime/Linux/librkllm_api/aarch64/librkllmrt.so" \
+  "$DIST/lib/librkllmrt.so"
+copy_file \
+  "$BUILD_SRC_ROOT/examples/multimodal_model_demo/deploy/3rdparty/librknnrt/Linux/librknn_api/aarch64/librknnrt.so" \
+  "$DIST/lib/librknnrt.so"
 
-    # Text LLM demo (official rkllm_api_demo)
-    LLM_SRC="$RKNN_LLM_SRC/examples/rkllm_api_demo/deploy"
-    LLM_BUILD="$OUT/build_rkllm_api_demo"
-    if [ -d "$LLM_SRC" ]; then
-      rm -rf "$LLM_BUILD"
-      cmake -S "$LLM_SRC" -B "$LLM_BUILD" \
-        -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-      cmake --build "$LLM_BUILD" --parallel
-      if [ -f "$LLM_BUILD/llm_demo" ]; then
-        cp -f "$LLM_BUILD/llm_demo" "$DIST/bin/llm_demo"
-      fi
-    else
-      echo "[build] WARN: LLM demo source not found: $LLM_SRC"
-    fi
-
-    # VLM demo (official multimodal_model_demo)
-    VLM_SRC="$RKNN_LLM_SRC/examples/multimodal_model_demo/deploy"
-    VLM_BUILD="$OUT/build_multimodal_model_demo"
-    if [ -d "$VLM_SRC" ]; then
-      rm -rf "$VLM_BUILD"
-      cmake -S "$VLM_SRC" -B "$VLM_BUILD" \
-        -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-      cmake --build "$VLM_BUILD" --parallel
-      if [ -f "$VLM_BUILD/demo" ]; then
-        cp -f "$VLM_BUILD/demo" "$DIST/bin/vlm_demo"
-      fi
-      if [ -f "$VLM_BUILD/imgenc" ]; then
-        cp -f "$VLM_BUILD/imgenc" "$DIST/bin/imgenc"
-      fi
-    else
-      echo "[build] WARN: VLM demo source not found: $VLM_SRC"
-    fi
-
-    # Runtime shared libs (ship in ./lib on device)
-    RKLLM_RT="$RKNN_LLM_SRC/rkllm-runtime/Linux/librkllm_api/aarch64/librkllmrt.so"
-    RKNN_RT="$RKNN_LLM_SRC/examples/multimodal_model_demo/deploy/3rdparty/librknnrt/Linux/librknn_api/aarch64/librknnrt.so"
-    if [ -f "$RKLLM_RT" ]; then
-      cp -f "$RKLLM_RT" "$DIST/lib/"
-    else
-      echo "[build] WARN: missing librkllmrt.so at: $RKLLM_RT"
-    fi
-    if [ -f "$RKNN_RT" ]; then
-      cp -f "$RKNN_RT" "$DIST/lib/"
-    else
-      echo "[build] WARN: missing librknnrt.so at: $RKNN_RT"
-    fi
-
-    # Strip binaries if possible (reduces device footprint)
-    if command -v aarch64-linux-gnu-strip >/dev/null 2>&1; then
-      aarch64-linux-gnu-strip "$DIST/bin"/* 2>/dev/null || true
-    fi
-
-    # Make the staged binaries prefer ./lib at runtime.
-    # This avoids embedding build-machine paths in RUNPATH/RPATH.
-    if command -v patchelf >/dev/null 2>&1; then
-      for b in "$DIST/bin"/*; do
-        [ -f "$b" ] || continue
-        patchelf --set-rpath '\$ORIGIN/../lib' "$b" 2>/dev/null || true
-      done
-    fi
-  fi
-fi
-
-echo "[build] staged: $DIST"
-if [ ! -f "$DIST/bin/llm_demo" ] || [ ! -f "$DIST/bin/vlm_demo" ]; then
-  echo "[build] NOTE: demo binaries not staged (missing rknn-llm sources)." >&2
-  echo "[build]       Provide RKNN_LLM_SRC or add third_party/rknn-llm to this repo." >&2
-fi
+echo "[stage] staged minimal package: $DIST"
+echo "[stage] next on device: bash scripts/build_native_demos.sh"
