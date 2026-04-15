@@ -9,14 +9,44 @@ from .reporter import MarkdownReporter
 
 
 class BenchmarkRunner:
-    def __init__(self, workspace_root: str, config_path: str):
+    def __init__(self, workspace_root: str, config_path: str, warmup: bool = False, warmup_prompt: str = ""):
         self.workspace_root = workspace_root
         self.models_config = load_config(config_path)
         self.dataset = BenchmarkDataset(workspace_root)
         self.reporter = MarkdownReporter(workspace_root)
+        self.warmup = bool(warmup)
+        self.warmup_prompt = str(warmup_prompt or "")
 
         self.logs_dir = os.path.join(self.workspace_root, "logs")
         os.makedirs(self.logs_dir, exist_ok=True)
+
+    @staticmethod
+    def _kv_cache_estimate_mb(config) -> float:
+        """Upper-bound style KV estimate: 2 * L * n_kv * head_dim * seq * bytes/8."""
+        if config is None:
+            return 0.0
+        L = getattr(config, "kv_num_hidden_layers", None)
+        kv_h = getattr(config, "kv_num_key_value_heads", None)
+        hd = getattr(config, "kv_head_dim", None)
+        if L is None or kv_h is None or hd is None:
+            return 0.0
+        seq = int(getattr(config, "max_context_len", 0) or 0)
+        bpe = float(getattr(config, "kv_bytes_per_element", 2) or 2)
+        bytes_total = 2.0 * float(L) * float(kv_h) * float(hd) * float(seq) * (bpe / 8.0)
+        return bytes_total / (1024.0 * 1024.0)
+
+    @staticmethod
+    def _index_worst_runtime_os(metrics_list: list) -> int:
+        if not metrics_list:
+            return 0
+        best_i = 0
+        best_v = float(metrics_list[0].get("runtime_overhead_os_mb", 0.0))
+        for i, m in enumerate(metrics_list):
+            v = float(m.get("runtime_overhead_os_mb", 0.0))
+            if v > best_v:
+                best_v = v
+                best_i = i
+        return best_i
 
     def run_all(self, target_models=None, event_sink=None, cancel_event=None):
         results = []
@@ -102,7 +132,11 @@ class BenchmarkRunner:
                                 pass
 
                         _emit_log(f"Task {task.get('id')}: {str(task.get('prompt', ''))[:20]}...")
-                        success, output, duration, mem_metrics = engine.run(task.get("prompt", ""))
+                        success, output, duration, mem_metrics = engine.run(
+                            task.get("prompt", ""),
+                            warmup=self.warmup,
+                            warmup_prompt=self.warmup_prompt,
+                        )
 
                         log_f.write(
                             f"--- Task {task.get('id')} (Prompt: {task.get('prompt', '')}) ---\n"
@@ -147,7 +181,12 @@ class BenchmarkRunner:
                         _emit_log(
                             f"Task {task.get('id')}: image={os.path.basename(str(task.get('image','')))}, prompt='{prompt[:20]}...'"
                         )
-                        success, output, duration, mem_metrics = engine.run(prompt, image_path=task.get("image", ""))
+                        success, output, duration, mem_metrics = engine.run(
+                            prompt,
+                            image_path=task.get("image", ""),
+                            warmup=self.warmup,
+                            warmup_prompt=self.warmup_prompt,
+                        )
 
                         log_f.write(
                             f"--- Task {task.get('id')} (Image: {task.get('image','')} | Prompt: {prompt}) ---\n"
@@ -199,6 +238,18 @@ class BenchmarkRunner:
             "model_data_mb": 0.0,
             "kv_cache_overhead_mb": 0.0,
             "total_peak_mb": 0.0,
+            "vmrss_after_llm_load_mb": 0.0,
+            "vmrss_after_imgenc_load_mb": 0.0,
+            "vmrss_after_imgenc_infer_mb": 0.0,
+            "vmrss_at_interactive_ready_mb": 0.0,
+            "peak_dram_os_mb": 0.0,
+            "runtime_overhead_os_mb": 0.0,
+            "peak_dram_rkllm_mb": 0.0,
+            "runtime_delta_rkllm_mb": 0.0,
+            "kv_cache_estimate_mb": 0.0,
+            "memory_worst_task_index": 0,
+            "per_task_runtime_overhead_os": [],
+            "avg_cpu_usage_percent": 0.0,
             "npu_core_num": 0,
             "status": status,
         }
@@ -209,16 +260,21 @@ class BenchmarkRunner:
 
         total_prefill = sum(m.get("prefill_tps", 0.0) for m in metrics_list)
         total_gen = sum(m.get("generate_tps", 0.0) for m in metrics_list)
+        count = len(metrics_list)
+
+        worst_i = self._index_worst_runtime_os(metrics_list)
+        w = metrics_list[worst_i]
+
+        per_task_os = [float(m.get("runtime_overhead_os_mb", 0.0)) for m in metrics_list]
+
         peak_memories = [m.get("peak_memory_gb", 0.0) for m in metrics_list]
         max_peak_memory = max(peak_memories) if peak_memories else 0.0
 
-        max_model_data = max([m.get("model_data_mb", 0.0) for m in metrics_list])
-        max_kv_cache = max([m.get("kv_cache_overhead_mb", 0.0) for m in metrics_list])
-        max_total_peak = max([m.get("total_peak_mb", 0.0) for m in metrics_list])
-
-        count = len(metrics_list)
         npu_cores = [m.get("npu_core_num", 0) for m in metrics_list]
         max_npu_core = max(npu_cores) if npu_cores else 0
+
+        avg_cpu = sum(m.get("avg_cpu_usage_percent", 0.0) for m in metrics_list) / count if count > 0 else 0.0
+        kv_est = self._kv_cache_estimate_mb(config)
 
         return {
             "model_name": model_name,
@@ -228,9 +284,21 @@ class BenchmarkRunner:
             "avg_prefill_tps": total_prefill / count if count > 0 else 0.0,
             "avg_generate_tps": total_gen / count if count > 0 else 0.0,
             "peak_memory_rkllm": max_peak_memory,
-            "model_data_mb": max_model_data,
-            "kv_cache_overhead_mb": max_kv_cache,
-            "total_peak_mb": max_total_peak,
+            "memory_worst_task_index": worst_i + 1,
+            "per_task_runtime_overhead_os": per_task_os,
+            "vmrss_after_llm_load_mb": float(w.get("vmrss_after_llm_load_mb", 0.0)),
+            "vmrss_after_imgenc_load_mb": float(w.get("vmrss_after_imgenc_load_mb", 0.0)),
+            "vmrss_after_imgenc_infer_mb": float(w.get("vmrss_after_imgenc_infer_mb", 0.0)),
+            "vmrss_at_interactive_ready_mb": float(w.get("vmrss_at_interactive_ready_mb", 0.0)),
+            "peak_dram_os_mb": float(w.get("peak_dram_os_mb", 0.0)),
+            "runtime_overhead_os_mb": float(w.get("runtime_overhead_os_mb", 0.0)),
+            "peak_dram_rkllm_mb": float(w.get("peak_dram_rkllm_mb", 0.0)),
+            "runtime_delta_rkllm_mb": float(w.get("runtime_delta_rkllm_mb", 0.0)),
+            "kv_cache_estimate_mb": kv_est,
+            "model_data_mb": float(w.get("model_data_mb", 0.0)),
+            "kv_cache_overhead_mb": float(w.get("kv_cache_overhead_mb", 0.0)),
+            "total_peak_mb": float(w.get("total_peak_mb", 0.0)),
+            "avg_cpu_usage_percent": avg_cpu,
             "npu_core_num": max_npu_core,
             "status": status,
         }

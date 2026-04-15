@@ -34,6 +34,16 @@ def main():
         default="conf/models_config.json",
         help="Path to models configuration file.",
     )
+    parser.add_argument(
+        "--warmup",
+        action="store_true",
+        help="Enable one warmup inference before Init DRAM sampling.",
+    )
+    parser.add_argument(
+        "--warmup-prompt",
+        default="",
+        help="Optional warmup prompt. Defaults to each task prompt when empty.",
+    )
 
     args = parser.parse_args()
 
@@ -45,7 +55,12 @@ def main():
         print(f"Error: Configuration file not found at {config_path}")
         return
 
-    runner = BenchmarkRunner(workspace_root, config_path)
+    runner = BenchmarkRunner(
+        workspace_root,
+        config_path,
+        warmup=args.warmup,
+        warmup_prompt=args.warmup_prompt,
+    )
     if "all" in args.model:
         runner.run_all()
     else:

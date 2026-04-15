@@ -21,6 +21,12 @@ class ModelConfig:
         self.img_end = data.get("img_end", "")
         self.img_content = data.get("img_content", "")
 
+        # Optional: analytical KV size upper bound (see README / benchmark report footnote).
+        self.kv_num_hidden_layers = data.get("kv_num_hidden_layers")
+        self.kv_num_key_value_heads = data.get("kv_num_key_value_heads")
+        self.kv_head_dim = data.get("kv_head_dim")
+        self.kv_bytes_per_element = int(data.get("kv_bytes_per_element", 2))
+
     def validate(self, workspace_root: str):
         bin_path = os.path.join(workspace_root, self.binary_path)
         if not os.path.isfile(bin_path):
