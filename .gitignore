@@ -1,0 +1,16 @@
+__pycache__/
+
+out/
+dist/
+
+# Ignore third_party contents by default, but allow git submodules.
+third_party/*
+!third_party/
+!third_party/rknn-llm
+!third_party/rknn-llm/
+!third_party/rknn-llm/**
+
+models/
+logs/
+results/
+

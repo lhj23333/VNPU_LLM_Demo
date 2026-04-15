@@ -1,0 +1,22 @@
+models:
+## LLM (text)
+  qwen2-1.5b-text:
+    type: "text"
+    binary_path: "bin/llm_demo"
+    model_path: "models/Qwen2-1.5B_W8A8_RK3588.rkllm"
+    max_new_tokens: 512
+    max_context_len: 2048
+
+## VLM (multimodal) - route A: official rknn-llm multimodal_model_demo/deploy binary
+  qwen3-vl-2b:
+    type: "vlm"
+    binary_path: "bin/vlm_demo"
+    vision_model_path: "models/qwen3-vl_vision_rk3588.rknn"
+    llm_model_path: "models/qwen3-vl-2B-w8a8-rk3588.rkllm"
+    max_new_tokens: 2048
+    # Note: max_context_len must be larger than text-token-num+image-token-num+max_new_tokens
+    max_context_len: 4096
+    rknn_core_num: 3
+    img_start: "<|vision_start|>"
+    img_end: "<|vision_end|>"
+    img_content: "<|image_pad|>"
