@@ -1,0 +1,27 @@
+[
+  {
+    "id": 1,
+    "category": "short_test",
+    "prompt": "Hello, please introduce yourself."
+  },
+  {
+    "id": 2,
+    "category": "math",
+    "prompt": "Calculate the result of 123 multiplied by 456 and explain the steps."
+  },
+  {
+    "id": 3,
+    "category": "code",
+    "prompt": "Write a quicksort algorithm in Python."
+  },
+  {
+    "id": 4,
+    "category": "logic",
+    "prompt": "There were originally 10 birds on the tree. Someone fired a gun and killed one. How many birds are left?"
+  },
+  {
+    "id": 5,
+    "category": "long_text_cache_test",
+    "prompt": "Please write an extensive article on the societal implications of artificial intelligence’s future development, covering the economic, educational, and healthcare sectors. The piece should be detailed and structured into at least three distinct sections."
+  }
+]

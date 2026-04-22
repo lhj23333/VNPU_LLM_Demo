@@ -1,0 +1,27 @@
+[
+  {
+    "id": 1,
+    "image": "images/ChineseWall.jpg",
+    "prompt": "<image>Please describe this image in detail."
+  },
+  {
+    "id": 2,
+    "image": "images/Moon.jpg",
+    "prompt": "<image>Please describe this image in detail."
+  },
+  {
+    "id": 3,
+    "image": "images/Pizza.jpg",
+    "prompt": "<image>Please describe this image in detail."
+  },
+  {
+    "id": 4,
+    "image": "images/Singapore.jpg",
+    "prompt": "<image>Please describe this image in detail."
+  },
+  {
+    "id": 5,
+    "image": "images/Titanic.jpg",
+    "prompt": "<image>Please describe this image in detail."
+  }
+]

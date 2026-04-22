@@ -1,32 +1,102 @@
-# Device Runbook
+# Device Runbook (Runtime Base + Sessions)
 
-## 串口进入
+## 1. Device Runtime Base Layout
 
-Host:
+After Host deploys `dist/runtime_base/` to Device path `vnpu_llm/runtime_base`, expected tree:
 
-```bash
-sudo minicom -D /dev/ttyUSB0 -b 1500000
+```text
+/userdata/vnpu_llm/runtime_base/
+  bin/
+    llm_demo
+    vlm_demo
+  lib/
+    librkllmrt.so
+    librknnrt.so
+  executor/
+    device_executor.py
+    task_loader.py
+    demo_launcher.py
+    runtime_probe.py
+    rkllm_output_parser.py
+    telemetry_emitter.py
+  scripts/
+    env_setup.sh
+    fix_freq_rk3588.sh
+    build_demos_on_device.sh
+  _build_src/
+    rknn-llm/   # staged sources + headers for on-device cmake build
 ```
 
-## 运行
+If `bin/llm_demo` and `bin/vlm_demo` are missing (typical when Host did not pass `--llm-demo` / `--vlm-demo`), compile them on the device once:
 
 ```bash
-cd /userdata/vnpu_llm
-
-# 本地编译官方 demo
-bash scripts/build_native_demos.sh
-
-source ./env_setup.sh
-
-# 频率设置（可选）
-sudo bash scripts/fix_freq_rk3588.sh
-
-sudo python3 run_benchmark.py --model all
+cd /userdata/vnpu_llm/runtime_base
+sudo bash ./scripts/build_demos_on_device.sh
 ```
 
-说明：`build_native_demos.sh` 默认会在编译完成后删除 `_build_src/`，以节省 `/userdata` 空间。
+Requires: `cmake`, a C++ toolchain, and OpenMP dev package matching your OS image (e.g. `libomp-dev` or distro equivalent).
 
-## 常见检查
+## 2. Start Executor Service Loop
 
-- NPU 节点：`ls -l /dev/rknn`（若不存在，底层 NPU 驱动未就绪）
-- 依赖缺失：`ldd bin/vlm_demo` / `ldd bin/llm_demo`
+```bash
+cd /userdata/vnpu_llm/runtime_base
+source ./scripts/env_setup.sh
+
+# Optional for benchmark consistency
+sudo bash ./scripts/fix_freq_rk3588.sh
+
+python3 executor/device_executor.py \
+  --stdio-loop \
+  --sessions-root /userdata/vnpu_llm/sessions
+```
+
+The process continuously reads command JSON lines from stdin and emits telemetry JSON lines to stdout.
+
+## 3. Session Directory Contract
+
+Host must stage each task bundle to:
+
+```text
+/userdata/vnpu_llm/sessions/<task_id>/
+  request.json
+  models/
+  inputs/
+```
+
+Executor writes runtime artifacts to:
+
+```text
+/userdata/vnpu_llm/sessions/<task_id>/
+  logs/
+    run_output.log
+    subtask_0000.log   # benchmark_batch only, one per subtask
+```
+
+## 4. UART Command Contract
+
+Accepted commands:
+
+```json
+{"cmd":"run_task","task_id":"task_001"}
+{"cmd":"stop_task","task_id":"task_001"}
+{"cmd":"cleanup_task","task_id":"task_001"}
+{"cmd":"cleanup_task"}
+{"cmd":"ping"}
+```
+
+`cleanup_task` without `task_id` removes every subdirectory under `--sessions-root` (after stopping the current task if one is running).
+
+## 5. Health Checks
+
+- NPU node:
+
+```bash
+ls -l /dev/rknn
+```
+
+- Runtime dependencies:
+
+```bash
+ldd /userdata/vnpu_llm/runtime_base/bin/llm_demo
+ldd /userdata/vnpu_llm/runtime_base/bin/vlm_demo
+```

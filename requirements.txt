@@ -1,0 +1,2 @@
+# Host-side Python (host_control uart/execute, runtime_collector)
+pyserial>=3.5

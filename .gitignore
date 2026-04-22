@@ -1,7 +1,10 @@
 __pycache__/
+*.pyc
 
 out/
 dist/
+
+host/tasks/
 
 # Ignore third_party contents by default, but allow git submodules.
 third_party/*
@@ -13,4 +16,3 @@ third_party/*
 models/
 logs/
 results/
-
