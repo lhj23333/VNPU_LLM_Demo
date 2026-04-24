@@ -3,74 +3,45 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+MODELS_CONFIG_PATH="${REPO_ROOT}/host_control/benchmark_assets/configs/models_config.json"
 
 usage() {
   cat <<'EOF'
 Usage:
-  tools/run_infer_e2e.sh <mode> [options]
+  tools/run_infer_e2e.sh <mode> --model-id <id> [options]
 
 Modes:
   llm_single
   vlm_single
   benchmark_batch
 
-Common options:
-  --task-id <id>                 Task id (default: <mode>_YYYYmmdd_HHMMSS)
-  --port <uart_port>             UART device (default: /dev/ttyUSB0)
-  --baudrate <int>               UART baudrate (default: 1500000)
-  --collect-seconds <int>        Max wait for task terminal lifecycle (default: 180)
-  --max-new-tokens <int>         Runtime max_new_tokens (mode default)
-  --max-context-len <int>        Runtime max_context_len (mode default)
-  --no-summarize                 Skip summary report generation
-  --cleanup-on-device            Send cleanup_task after pull
-  --result-label <name>          Host results folder name (default: derived from --llm-model-src basename)
+Minimal common options:
+  --model-id <id>                 Required, models_config.json key
+  --task-id <id>                  Optional task id (default: <mode>_YYYYmmdd_HHMMSS)
+  --result-label <name>           Optional result model label override
+  --port <uart_port>              UART device (default: /dev/ttyUSB0)
+  --baudrate <int>                UART baudrate (default: 1500000)
+  --collect-seconds <int>         Max wait for task terminal lifecycle over UART (default: 1800)
+  --no-summarize                  Skip summary report generation
+  --cleanup-on-device             Send cleanup_task after pull
+
+Business input options:
+  --prompt <text>                 Required for llm_single / vlm_single unless provided by config defaults
+  --image-src <path>              Required for vlm_single
+  --include-text                  benchmark_batch include text prompts
+  --include-vlm                   benchmark_batch include vlm tasks
+                                  (if neither include flag is set, both are enabled)
+  --round <n>                     benchmark_batch: repeat full subtask suite n times (default: 1)
+  --text-prompts <json>           Optional override for benchmark text prompts list
+  --vlm-tasks <json>              Optional override for benchmark VLM tasks list
+  --images-root <dir>             Optional override for benchmark image root
 
 Environment:
-  PCIE_DEVICE_SELECT             pcie_file_share_rc menu index when multiple EPs exist (default: 1)
+  PCIE_DEVICE_SELECT              pcie_file_share_rc menu index when multiple EPs exist (default: 1)
 
-LLM mode options:
-  --llm-model-src <path>         Required
-  --prompt <text>                Required
-
-VLM mode options:
-  --llm-model-src <path>         Required
-  --vision-model-src <path>      Required
-  --image-src <path>             Required
-  --prompt <text>                Required
-  --rknn-core-num <int>          Default: 3
-  --img-start <token>            Default: <|vision_start|>
-  --img-end <token>              Default: <|vision_end|>
-  --img-content <token>          Default: <|image_pad|>
-
-Benchmark mode options:
-  --llm-model-src <path>         Required
-  --vision-model-src <path>      Required when --include-vlm is set
-  --include-text                 Include text prompts
-  --include-vlm                  Include vlm tasks
-                                 (if neither include flag is set, both are enabled)
-  --text-prompts <json>          Default: host_control/benchmark_assets/prompts/text_prompts.json
-  --vlm-tasks <json>             Default: host_control/benchmark_assets/prompts/vlm_tasks.json
-  --images-root <dir>            Default: host_control/benchmark_assets
-  --rknn-core-num <int>          Default: 3
-  --img-start <token>            Default: <|vision_start|>
-  --img-end <token>              Default: <|vision_end|>
-  --img-content <token>          Default: <|image_pad|>
-
-Examples:
-  tools/run_infer_e2e.sh llm_single \
-    --llm-model-src /abs/path/to/model.rkllm \
-    --prompt "Please introduce yourself."
-
-  tools/run_infer_e2e.sh vlm_single \
-    --llm-model-src /abs/path/to/model.rkllm \
-    --vision-model-src /abs/path/to/vision.rknn \
-    --image-src /abs/path/to/image.jpg \
-    --prompt "Describe this image."
-
-  tools/run_infer_e2e.sh benchmark_batch \
-    --llm-model-src /abs/path/to/model.rkllm \
-    --vision-model-src /abs/path/to/vision.rknn \
-    --include-text --include-vlm
+Notes:
+  - Runtime and model paths are loaded from host_control/benchmark_assets/configs/models_config.json
+  - request.json is rendered directly to results/<model_label>/<task_id>/request.json
 EOF
 }
 
@@ -94,34 +65,35 @@ if [[ "${MODE}" != "llm_single" && "${MODE}" != "vlm_single" && "${MODE}" != "be
 fi
 
 TASK_ID=""
+MODEL_ID=""
+RESULT_MODEL_LABEL=""
 PORT="/dev/ttyUSB0"
 BAUDRATE="1500000"
-COLLECT_SECONDS="180"
-MAX_NEW_TOKENS=""
-MAX_CONTEXT_LEN=""
-RKNN_CORE_NUM="3"
-IMG_START="<|vision_start|>"
-IMG_END="<|vision_end|>"
-IMG_CONTENT="<|image_pad|>"
+COLLECT_SECONDS="1800"
 NO_SUMMARIZE="0"
 CLEANUP_ON_DEVICE="0"
-RESULT_MODEL_LABEL=""
 
-LLM_MODEL_SRC=""
-VISION_MODEL_SRC=""
-IMAGE_SRC=""
 PROMPT=""
-
+IMAGE_SRC=""
 INCLUDE_TEXT="0"
 INCLUDE_VLM="0"
-TEXT_PROMPTS="${REPO_ROOT}/host_control/benchmark_assets/prompts/text_prompts.json"
-VLM_TASKS="${REPO_ROOT}/host_control/benchmark_assets/prompts/vlm_tasks.json"
-IMAGES_ROOT="${REPO_ROOT}/host_control/benchmark_assets"
+TEXT_PROMPTS=""
+VLM_TASKS=""
+IMAGES_ROOT=""
+BENCHMARK_ROUND="1"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --model-id)
+      MODEL_ID="$2"
+      shift 2
+      ;;
     --task-id)
       TASK_ID="$2"
+      shift 2
+      ;;
+    --result-label)
+      RESULT_MODEL_LABEL="$2"
       shift 2
       ;;
     --port)
@@ -136,44 +108,12 @@ while [[ $# -gt 0 ]]; do
       COLLECT_SECONDS="$2"
       shift 2
       ;;
-    --max-new-tokens)
-      MAX_NEW_TOKENS="$2"
-      shift 2
-      ;;
-    --max-context-len)
-      MAX_CONTEXT_LEN="$2"
-      shift 2
-      ;;
-    --rknn-core-num)
-      RKNN_CORE_NUM="$2"
-      shift 2
-      ;;
-    --img-start)
-      IMG_START="$2"
-      shift 2
-      ;;
-    --img-end)
-      IMG_END="$2"
-      shift 2
-      ;;
-    --img-content)
-      IMG_CONTENT="$2"
-      shift 2
-      ;;
-    --llm-model-src)
-      LLM_MODEL_SRC="$2"
-      shift 2
-      ;;
-    --vision-model-src)
-      VISION_MODEL_SRC="$2"
+    --prompt)
+      PROMPT="$2"
       shift 2
       ;;
     --image-src)
       IMAGE_SRC="$2"
-      shift 2
-      ;;
-    --prompt)
-      PROMPT="$2"
       shift 2
       ;;
     --include-text)
@@ -196,6 +136,10 @@ while [[ $# -gt 0 ]]; do
       IMAGES_ROOT="$2"
       shift 2
       ;;
+    --round)
+      BENCHMARK_ROUND="$2"
+      shift 2
+      ;;
     --no-summarize)
       NO_SUMMARIZE="1"
       shift
@@ -203,10 +147,6 @@ while [[ $# -gt 0 ]]; do
     --cleanup-on-device)
       CLEANUP_ON_DEVICE="1"
       shift
-      ;;
-    --result-label)
-      RESULT_MODEL_LABEL="$2"
-      shift 2
       ;;
     -h|--help)
       usage
@@ -220,54 +160,192 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "${MODE}" != "benchmark_batch" && "${BENCHMARK_ROUND}" != "1" ]]; then
+  echo "--round is only supported for benchmark_batch mode" >&2
+  exit 1
+fi
+if ! [[ "${BENCHMARK_ROUND}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "--round must be a positive integer (got: ${BENCHMARK_ROUND})" >&2
+  exit 1
+fi
+if ! [[ "${COLLECT_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "--collect-seconds must be a positive integer (got: ${COLLECT_SECONDS})" >&2
+  exit 1
+fi
+
+if [[ -z "${MODEL_ID}" ]]; then
+  echo "--model-id is required" >&2
+  exit 1
+fi
+
 if [[ -z "${TASK_ID}" ]]; then
   TASK_ID="${MODE}_$(date +%Y%m%d_%H%M%S)"
 fi
 
-if [[ -z "${MAX_NEW_TOKENS}" ]]; then
-  if [[ "${MODE}" == "llm_single" ]]; then
-    MAX_NEW_TOKENS="512"
-  else
-    MAX_NEW_TOKENS="1024"
-  fi
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "python3 not found" >&2
+  exit 1
+fi
+if [[ ! -f "${MODELS_CONFIG_PATH}" ]]; then
+  echo "models config not found: ${MODELS_CONFIG_PATH}" >&2
+  exit 1
 fi
 
-if [[ -z "${MAX_CONTEXT_LEN}" ]]; then
-  if [[ "${MODE}" == "llm_single" ]]; then
-    MAX_CONTEXT_LEN="2048"
-  else
-    MAX_CONTEXT_LEN="4096"
-  fi
-fi
+cd "${REPO_ROOT}"
 
-case "${MODE}" in
-  llm_single)
-    if [[ -z "${LLM_MODEL_SRC}" || -z "${PROMPT}" ]]; then
-      echo "llm_single requires --llm-model-src and --prompt" >&2
-      exit 1
-    fi
-    ;;
-  vlm_single)
-    if [[ -z "${LLM_MODEL_SRC}" || -z "${VISION_MODEL_SRC}" || -z "${IMAGE_SRC}" || -z "${PROMPT}" ]]; then
-      echo "vlm_single requires --llm-model-src --vision-model-src --image-src --prompt" >&2
-      exit 1
-    fi
-    ;;
-  benchmark_batch)
-    if [[ -z "${LLM_MODEL_SRC}" ]]; then
-      echo "benchmark_batch requires --llm-model-src" >&2
-      exit 1
-    fi
-    if [[ "${INCLUDE_TEXT}" == "0" && "${INCLUDE_VLM}" == "0" ]]; then
-      INCLUDE_TEXT="1"
-      INCLUDE_VLM="1"
-    fi
-    if [[ "${INCLUDE_VLM}" == "1" && -z "${VISION_MODEL_SRC}" ]]; then
-      echo "benchmark_batch with --include-vlm requires --vision-model-src" >&2
-      exit 1
-    fi
-    ;;
-esac
+export REPO_ROOT MODELS_CONFIG_PATH MODEL_ID MODE PROMPT IMAGE_SRC INCLUDE_TEXT INCLUDE_VLM TEXT_PROMPTS VLM_TASKS IMAGES_ROOT BENCHMARK_ROUND
+CONFIG_EXPORTS="$(
+  python3 - <<'PY'
+import json
+import os
+import shlex
+from pathlib import Path
+
+repo_root = Path(os.environ["REPO_ROOT"]).resolve()
+config_path = Path(os.environ["MODELS_CONFIG_PATH"]).resolve()
+model_id = os.environ["MODEL_ID"]
+mode = os.environ["MODE"]
+prompt_cli = os.environ.get("PROMPT", "").strip()
+image_cli = os.environ.get("IMAGE_SRC", "").strip()
+include_text = os.environ.get("INCLUDE_TEXT", "0") == "1"
+include_vlm = os.environ.get("INCLUDE_VLM", "0") == "1"
+text_prompts_cli = os.environ.get("TEXT_PROMPTS", "").strip()
+vlm_tasks_cli = os.environ.get("VLM_TASKS", "").strip()
+images_root_cli = os.environ.get("IMAGES_ROOT", "").strip()
+
+def die(msg: str) -> None:
+    raise SystemExit(msg)
+
+def resolve_path(raw: str) -> str:
+    value = str(raw).strip()
+    if not value:
+        return ""
+    p = Path(value).expanduser()
+    return str((repo_root / p).resolve()) if not p.is_absolute() else str(p.resolve())
+
+def resolve_file(raw: str, field: str) -> str:
+    path = resolve_path(raw)
+    if not path:
+        die(f"Missing required field: {field}")
+    p = Path(path)
+    if not p.is_file():
+        die(f"{field} does not exist: {p}")
+    return str(p)
+
+def resolve_dir(raw: str, field: str) -> str:
+    path = resolve_path(raw)
+    if not path:
+        die(f"Missing required field: {field}")
+    p = Path(path)
+    if not p.is_dir():
+        die(f"{field} does not exist: {p}")
+    return str(p)
+
+try:
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+except Exception as exc:
+    die(f"Failed to read models config: {config_path}: {exc}")
+
+models = data.get("models")
+if not isinstance(models, dict):
+    die(f"Invalid models config: missing object field 'models': {config_path}")
+if model_id not in models:
+    die(f"model_id '{model_id}' not found in config")
+cfg = models[model_id]
+if not isinstance(cfg, dict):
+    die(f"Invalid model config for '{model_id}': expected object")
+
+defaults = data.get("defaults", {}) if isinstance(data.get("defaults", {}), dict) else {}
+prompts_defaults = defaults.get("prompts", {}) if isinstance(defaults.get("prompts", {}), dict) else {}
+benchmark_defaults = defaults.get("benchmark", {}) if isinstance(defaults.get("benchmark", {}), dict) else {}
+runtime_defaults = defaults.get("runtime", {}) if isinstance(defaults.get("runtime", {}), dict) else {}
+
+model_type = str(cfg.get("type", "")).strip().lower()
+if model_type not in {"text", "vlm"}:
+    die(f"Invalid type for '{model_id}': {model_type!r} (expected 'text' or 'vlm')")
+
+if mode == "llm_single" and model_type != "text":
+    die(f"llm_single requires model type 'text'; got '{model_type}' for model-id '{model_id}'")
+if mode == "vlm_single" and model_type != "vlm":
+    die(f"vlm_single requires model type 'vlm'; got '{model_type}' for model-id '{model_id}'")
+
+llm_field = "model_path" if model_type == "text" else "llm_model_path"
+llm_model_src = resolve_file(cfg.get(llm_field, ""), llm_field)
+vision_model_src = ""
+if model_type == "vlm":
+    vision_model_src = resolve_file(cfg.get("vision_model_path", ""), "vision_model_path")
+
+max_new_tokens = cfg.get("max_new_tokens")
+max_context_len = cfg.get("max_context_len")
+if max_new_tokens is None or max_context_len is None:
+    die(f"Model '{model_id}' must define max_new_tokens and max_context_len")
+
+# Per-model rknn_core_num overrides defaults.runtime (path name "single_core" is not parsed).
+if cfg.get("rknn_core_num") is not None:
+    rknn_core_num = int(cfg["rknn_core_num"])
+else:
+    rknn_core_num = int(runtime_defaults.get("rknn_core_num", 3))
+img_start = str(cfg.get("img_start", "<|vision_start|>"))
+img_end = str(cfg.get("img_end", "<|vision_end|>"))
+img_content = str(cfg.get("img_content", "<|image_pad|>"))
+
+prompt_final = prompt_cli
+if mode == "llm_single" and not prompt_final:
+    prompt_final = str(prompts_defaults.get("llm_single", "")).strip()
+if mode == "vlm_single" and not prompt_final:
+    prompt_final = str(prompts_defaults.get("vlm_single", "")).strip()
+
+if mode in {"llm_single", "vlm_single"} and not prompt_final:
+    die(f"{mode} requires --prompt or defaults.prompts.{mode} in models_config.json")
+
+image_final = ""
+if mode == "vlm_single":
+    if not image_cli:
+        die("vlm_single requires --image-src")
+    image_final = resolve_file(image_cli, "--image-src")
+
+if mode == "benchmark_batch" and not include_text and not include_vlm:
+    include_text = True
+    include_vlm = True
+if mode == "benchmark_batch" and include_vlm and model_type != "vlm":
+    die(f"benchmark_batch with --include-vlm requires model type 'vlm'; got '{model_type}'")
+
+text_prompts = ""
+vlm_tasks = ""
+images_root = ""
+if mode == "benchmark_batch":
+    if include_text:
+        raw = text_prompts_cli or str(benchmark_defaults.get("text_prompts_path", "")).strip() or "host_control/benchmark_assets/prompts/text_prompts.json"
+        text_prompts = resolve_file(raw, "--text-prompts")
+    if include_vlm:
+        raw_tasks = vlm_tasks_cli or str(benchmark_defaults.get("vlm_tasks_path", "")).strip() or "host_control/benchmark_assets/prompts/vlm_tasks.json"
+        raw_images = images_root_cli or str(benchmark_defaults.get("images_root", "")).strip() or "host_control/benchmark_assets"
+        vlm_tasks = resolve_file(raw_tasks, "--vlm-tasks")
+        images_root = resolve_dir(raw_images, "--images-root")
+
+exports = {
+    "CONFIG_MODEL_TYPE": model_type,
+    "LLM_MODEL_SRC": llm_model_src,
+    "VISION_MODEL_SRC": vision_model_src,
+    "PROMPT_FINAL": prompt_final,
+    "IMAGE_SRC_FINAL": image_final,
+    "INCLUDE_TEXT_FINAL": "1" if include_text else "0",
+    "INCLUDE_VLM_FINAL": "1" if include_vlm else "0",
+    "TEXT_PROMPTS_FINAL": text_prompts,
+    "VLM_TASKS_FINAL": vlm_tasks,
+    "IMAGES_ROOT_FINAL": images_root,
+    "MAX_NEW_TOKENS": str(int(max_new_tokens)),
+    "MAX_CONTEXT_LEN": str(int(max_context_len)),
+    "RKNN_CORE_NUM": str(int(rknn_core_num)),
+    "IMG_START": img_start,
+    "IMG_END": img_end,
+    "IMG_CONTENT": img_content,
+}
+for k, v in exports.items():
+    print(f"{k}={shlex.quote(v)}")
+PY
+)"
+eval "${CONFIG_EXPORTS}"
 
 if [[ -z "${RESULT_MODEL_LABEL}" ]]; then
   export _E2E_LLM_MODEL_SRC="${LLM_MODEL_SRC}"
@@ -278,79 +356,42 @@ if [[ -z "${RESULT_MODEL_LABEL}" ]]; then
   unset _E2E_LLM_MODEL_SRC
 fi
 
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "python3 not found" >&2
-  exit 1
-fi
-if ! command -v pcie_file_share_rc >/dev/null 2>&1; then
-  echo "pcie_file_share_rc not found" >&2
-  exit 1
-fi
-
-cd "${REPO_ROOT}"
-
-TMP_DIR="$(mktemp -d -t vnpu_e2e_XXXXXX)"
-cleanup_tmp() {
-  rm -rf "${TMP_DIR}"
-}
-trap cleanup_tmp EXIT
-
-REQUEST_JSON_PATH="${TMP_DIR}/request.json"
-MANIFEST_TSV_PATH="${TMP_DIR}/upload_manifest.tsv"
+RESULT_TASK_DIR="${REPO_ROOT}/results/${RESULT_MODEL_LABEL}/${TASK_ID}"
+mkdir -p "${RESULT_TASK_DIR}"
+REQUEST_JSON_PATH="${RESULT_TASK_DIR}/request.json"
+UPLOAD_MANIFEST_PATH="${RESULT_TASK_DIR}/upload_manifest.tsv"
 DEVICE_SESSION_REL="vnpu_llm/sessions/${TASK_ID}"
 PCIE_DEVICE_SELECT="${PCIE_DEVICE_SELECT:-1}"
 
-export MODE
-export TASK_ID
-export REQUEST_JSON_PATH
-export MANIFEST_TSV_PATH
-export DEVICE_SESSION_REL
-export PCIE_DEVICE_SELECT
-export LLM_MODEL_SRC
-export VISION_MODEL_SRC
-export IMAGE_SRC
-export PROMPT
-export MAX_NEW_TOKENS
-export MAX_CONTEXT_LEN
-export RKNN_CORE_NUM
-export IMG_START
-export IMG_END
-export IMG_CONTENT
-export INCLUDE_TEXT
-export INCLUDE_VLM
-export TEXT_PROMPTS
-export VLM_TASKS
-export IMAGES_ROOT
-
+export TASK_ID MODE DEVICE_SESSION_REL REQUEST_JSON_PATH UPLOAD_MANIFEST_PATH
+export LLM_MODEL_SRC VISION_MODEL_SRC IMAGE_SRC_FINAL PROMPT_FINAL
+export MAX_NEW_TOKENS MAX_CONTEXT_LEN RKNN_CORE_NUM IMG_START IMG_END IMG_CONTENT
+export INCLUDE_TEXT_FINAL INCLUDE_VLM_FINAL TEXT_PROMPTS_FINAL VLM_TASKS_FINAL IMAGES_ROOT_FINAL
 python3 - <<'PY'
 import json
 import os
 from pathlib import Path
 
-
 def env(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
-
 
 def resolve_file(raw: str, field: str) -> Path:
     value = raw.strip()
     if not value:
         raise ValueError(f"Missing required field: {field}")
     path = Path(value).expanduser().resolve()
-    if not path.exists() or not path.is_file():
+    if not path.is_file():
         raise FileNotFoundError(f"{field} does not exist: {path}")
     return path
-
 
 def resolve_dir(raw: str, field: str) -> Path:
     value = raw.strip()
     if not value:
         raise ValueError(f"Missing required field: {field}")
     path = Path(value).expanduser().resolve()
-    if not path.exists() or not path.is_dir():
+    if not path.is_dir():
         raise FileNotFoundError(f"{field} does not exist: {path}")
     return path
-
 
 def read_json_list(path: Path, field: str) -> list:
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -358,11 +399,10 @@ def read_json_list(path: Path, field: str) -> list:
         raise ValueError(f"{field} must be a JSON list: {path}")
     return data
 
-
 mode = env("MODE")
 task_id = env("TASK_ID")
 request_json_path = Path(env("REQUEST_JSON_PATH"))
-manifest_path = Path(env("MANIFEST_TSV_PATH"))
+manifest_path = Path(env("UPLOAD_MANIFEST_PATH"))
 device_session_rel = env("DEVICE_SESSION_REL")
 
 max_new_tokens = int(env("MAX_NEW_TOKENS"))
@@ -374,14 +414,12 @@ img_content = env("IMG_CONTENT", "<|image_pad|>")
 
 uploads: list[tuple[str, str]] = []
 
-
 def add_upload(local_path: Path, device_rel: str) -> None:
     uploads.append((str(local_path.resolve()), device_rel))
 
-
 if mode == "llm_single":
-    llm_model = resolve_file(env("LLM_MODEL_SRC"), "--llm-model-src")
-    prompt = env("PROMPT")
+    llm_model = resolve_file(env("LLM_MODEL_SRC"), "LLM_MODEL_SRC")
+    prompt = env("PROMPT_FINAL")
     llm_name = llm_model.name
     add_upload(llm_model, f"{device_session_rel}/models/{llm_name}")
     request = {
@@ -395,10 +433,10 @@ if mode == "llm_single":
         },
     }
 elif mode == "vlm_single":
-    llm_model = resolve_file(env("LLM_MODEL_SRC"), "--llm-model-src")
-    vision_model = resolve_file(env("VISION_MODEL_SRC"), "--vision-model-src")
-    image_src = resolve_file(env("IMAGE_SRC"), "--image-src")
-    prompt = env("PROMPT")
+    llm_model = resolve_file(env("LLM_MODEL_SRC"), "LLM_MODEL_SRC")
+    vision_model = resolve_file(env("VISION_MODEL_SRC"), "VISION_MODEL_SRC")
+    image_src = resolve_file(env("IMAGE_SRC_FINAL"), "IMAGE_SRC_FINAL")
+    prompt = env("PROMPT_FINAL")
 
     llm_name = llm_model.name
     vision_name = vision_model.name
@@ -428,34 +466,38 @@ elif mode == "vlm_single":
         },
     }
 elif mode == "benchmark_batch":
-    include_text = env("INCLUDE_TEXT") == "1"
-    include_vlm = env("INCLUDE_VLM") == "1"
-    if not include_text and not include_vlm:
-        include_text = True
-        include_vlm = True
+    bench_round_raw = env("BENCHMARK_ROUND", "1").strip() or "1"
+    try:
+        bench_round = int(bench_round_raw)
+    except ValueError as exc:
+        raise ValueError(f"Invalid BENCHMARK_ROUND: {bench_round_raw!r}") from exc
+    if bench_round < 1:
+        bench_round = 1
 
-    llm_model = resolve_file(env("LLM_MODEL_SRC"), "--llm-model-src")
+    include_text = env("INCLUDE_TEXT_FINAL") == "1"
+    include_vlm = env("INCLUDE_VLM_FINAL") == "1"
+    llm_model = resolve_file(env("LLM_MODEL_SRC"), "LLM_MODEL_SRC")
     llm_name = llm_model.name
     add_upload(llm_model, f"{device_session_rel}/models/{llm_name}")
-
     model_block = {"llm_model": f"models/{llm_name}"}
+
     if include_vlm:
-        vision_model = resolve_file(env("VISION_MODEL_SRC"), "--vision-model-src")
+        vision_model = resolve_file(env("VISION_MODEL_SRC"), "VISION_MODEL_SRC")
         vision_name = vision_model.name
         add_upload(vision_model, f"{device_session_rel}/models/{vision_name}")
         model_block["vision_model"] = f"models/{vision_name}"
 
     subtasks: list[dict] = []
     if include_text:
-        text_prompts = resolve_file(env("TEXT_PROMPTS"), "--text-prompts")
+        text_prompts = resolve_file(env("TEXT_PROMPTS_FINAL"), "TEXT_PROMPTS_FINAL")
         for item in read_json_list(text_prompts, "--text-prompts"):
             prompt = str(item.get("prompt", "")).strip()
             if prompt:
                 subtasks.append({"type": "llm", "prompt": prompt})
 
     if include_vlm:
-        vlm_tasks = resolve_file(env("VLM_TASKS"), "--vlm-tasks")
-        images_root = resolve_dir(env("IMAGES_ROOT"), "--images-root")
+        vlm_tasks = resolve_file(env("VLM_TASKS_FINAL"), "VLM_TASKS_FINAL")
+        images_root = resolve_dir(env("IMAGES_ROOT_FINAL"), "IMAGES_ROOT_FINAL")
         for idx, item in enumerate(read_json_list(vlm_tasks, "--vlm-tasks"), start=1):
             raw_image = str(item.get("image", "")).strip()
             prompt = str(item.get("prompt", "")).strip()
@@ -468,16 +510,21 @@ elif mode == "benchmark_batch":
             if not source_image.exists():
                 source_image = images_root / Path(raw_image).name
             source_image = source_image.resolve()
-            if not source_image.exists() or not source_image.is_file():
+            if not source_image.is_file():
                 raise FileNotFoundError(f"Benchmark image is missing: {raw_image}")
 
             staged_name = f"img_{idx:03d}_{source_image.name}"
             add_upload(source_image, f"{device_session_rel}/inputs/{staged_name}")
-            subtasks.append({
-                "type": "vlm",
-                "image": f"inputs/{staged_name}",
-                "prompt": prompt,
-            })
+            subtasks.append(
+                {
+                    "type": "vlm",
+                    "image": f"inputs/{staged_name}",
+                    "prompt": prompt,
+                }
+            )
+
+    if not subtasks:
+        raise ValueError("benchmark_batch generated empty subtasks; check prompt/task JSON inputs")
 
     request = {
         "task_id": task_id,
@@ -490,11 +537,10 @@ elif mode == "benchmark_batch":
             "img_start": img_start,
             "img_end": img_end,
             "img_content": img_content,
+            "round": bench_round,
         },
         "subtasks": subtasks,
     }
-    if not subtasks:
-        raise ValueError("benchmark_batch generated empty subtasks; check prompt/task JSON inputs")
 else:
     raise ValueError(f"Unsupported mode: {mode}")
 
@@ -506,14 +552,17 @@ manifest_path.parent.mkdir(parents=True, exist_ok=True)
 with manifest_path.open("w", encoding="utf-8") as fp:
     for src, dst in uploads:
         fp.write(f"{src}\t{dst}\n")
-
-print(f"Prepared request + upload manifest: {request_json_path}")
-print(f"Upload files: {len(uploads)}")
 PY
 
+echo "Prepared request at: ${REQUEST_JSON_PATH}"
+if ! command -v pcie_file_share_rc >/dev/null 2>&1; then
+  echo "pcie_file_share_rc not found" >&2
+  exit 1
+fi
 echo "Submitting task '${TASK_ID}' to '${DEVICE_SESSION_REL}' via PCIe..."
 echo "  pcie device index (PCIE_DEVICE_SELECT): ${PCIE_DEVICE_SELECT}"
-exec 3< "${MANIFEST_TSV_PATH}"
+
+exec 3< "${UPLOAD_MANIFEST_PATH}"
 while IFS=$'\t' read -r -u3 src dst; do
   if [[ -z "${src}" || -z "${dst}" ]]; then
     continue
@@ -522,9 +571,6 @@ while IFS=$'\t' read -r -u3 src dst; do
   printf '%s\n' "${PCIE_DEVICE_SELECT}" | pcie_file_share_rc --set "${src}" "${dst}"
 done
 exec 3<&-
-
-RESULT_TASK_DIR="${REPO_ROOT}/results/${RESULT_MODEL_LABEL}/${TASK_ID}"
-mkdir -p "${RESULT_TASK_DIR}"
 
 echo "Running task and collecting telemetry..."
 python3 -m host_control execute \
@@ -583,6 +629,7 @@ echo "Done."
 echo "- task_id: ${TASK_ID}"
 echo "- result model label: ${RESULT_MODEL_LABEL}"
 echo "- result dir: ${RESULT_TASK_DIR}"
+echo "- request: ${REQUEST_JSON_PATH}"
 if [[ "${NO_SUMMARIZE}" == "0" ]]; then
   echo "- summary: ${RESULT_TASK_DIR}/summary.md"
 fi

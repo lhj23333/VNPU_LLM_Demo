@@ -44,7 +44,7 @@ class ResultSummarizer:
             f"- Subtasks: `{summary['subtasks_finished']}/{summary['subtasks_total']}`",
             f"- Avg Prefill TPS: `{summary['avg_prefill_tps']:.2f}`",
             f"- Avg Generate TPS: `{summary['avg_generate_tps']:.2f}`",
-            f"- Init DRAM (Weights+KV-Cache, device, MB): `{summary['init_dram_weights_kv_mb']:.2f}`",
+            f"- Init DRAM (LLM weights+KV on device, MB): `{summary['init_dram_weights_kv_mb']:.2f}`",
             f"- Runtime Buffer DRAM (device, MB): `{summary['runtime_buffer_dram_mb']:.2f}`",
             f"- Total Peak DRAM (VmHWM, device, MB): `{summary['total_peak_dram_mb']:.2f}`",
             f"- Avg Host process CPU (%): `{summary['avg_host_cpu_percent']:.2f}`",

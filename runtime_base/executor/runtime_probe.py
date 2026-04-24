@@ -21,6 +21,7 @@ LLM_LOADED = b"llm model loaded in"
 IMGENC_LOADED = b"imgenc model loaded in"
 IMGENC_INFER = b"imgenc model inference took"
 RKLLM_INIT_OK = b"rkllm init success"
+INITDRAM_GATE_MARKER = b"VNPU_LLM_INITDRAM_GATE"
 
 
 def _read_proc_status_value_mb(pid: int, key: str) -> float:
@@ -84,6 +85,16 @@ class RuntimeProbe:
         process.stdin.write((prompt + "\n").encode("utf-8"))
         process.stdin.flush()
 
+    @staticmethod
+    def _unlock_init_dram_gate(process: subprocess.Popen) -> None:
+        if process.stdin is None:
+            return
+        try:
+            process.stdin.write(b"\n")
+            process.stdin.flush()
+        except Exception:
+            pass
+
     def run(
         self,
         task_id: str,
@@ -91,6 +102,7 @@ class RuntimeProbe:
         prompt: str,
         subtask_index: Optional[int] = None,
         cancel_event=None,
+        init_dram_gate: bool = True,
     ) -> ProbeResult:
         start = time.time()
         seq = 0
@@ -106,6 +118,8 @@ class RuntimeProbe:
 
         assert process.stdout is not None
         ready_before_prompt = False
+        init_dram_weights_kv_mb = 0.0
+        init_sampled = False
         while True:
             if cancel_event is not None and cancel_event.is_set():
                 process.kill()
@@ -133,7 +147,28 @@ class RuntimeProbe:
             if (not milestone_flags["rkllm_init"]) and RKLLM_INIT_OK in low:
                 milestone_flags["rkllm_init"] = True
                 self.emitter.log(task_id, "rkllm init success milestone", subtask_index=subtask_index)
+
+            if init_dram_gate and (not init_sampled) and (INITDRAM_GATE_MARKER in output):
+                time.sleep(0.5)
+                init_dram_weights_kv_mb = _read_proc_status_value_mb(process.pid, "VmRSS:")
+                init_sampled = True
+                self._unlock_init_dram_gate(process)
+            elif (not init_dram_gate) and (not init_sampled) and (RKLLM_INIT_OK in low):
+                time.sleep(0.5)
+                init_dram_weights_kv_mb = _read_proc_status_value_mb(process.pid, "VmRSS:")
+                init_sampled = True
+
             if self._is_ready(output):
+                if not init_sampled:
+                    time.sleep(0.5)
+                    init_dram_weights_kv_mb = _read_proc_status_value_mb(process.pid, "VmRSS:")
+                    init_sampled = True
+                    if init_dram_gate and INITDRAM_GATE_MARKER not in output:
+                        self.emitter.log(
+                            task_id,
+                            "init_dram sampled at first user (no VNPU_LLM_INITDRAM_GATE in output; rebuild demos for LLM-only init)",
+                            subtask_index=subtask_index,
+                        )
                 ready_before_prompt = True
                 break
 
@@ -147,9 +182,7 @@ class RuntimeProbe:
                 duration_seconds=time.time() - start,
             )
 
-        # T1: weights + KV allocated — match RK3588 ProcessDRAMTracker snapshot (VmRSS after stabilize).
-        time.sleep(0.5)
-        init_dram_weights_kv_mb = _read_proc_status_value_mb(process.pid, "VmRSS:")
+        # Init DRAM: VmRSS after rkllm_init (+ optional stdin gate before vision) or fallback at first user:
 
         self._write_prompt(process, prompt)
         max_vmhwm_mb = 0.0

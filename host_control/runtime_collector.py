@@ -10,6 +10,26 @@ import serial
 TASK_TERMINAL_LIFECYCLE = frozenset({"finished", "failed", "stopped"})
 
 
+def _try_parse_uart_json_line(raw: bytes) -> dict | None:
+    text = raw.decode("utf-8", errors="replace").strip()
+    if not text:
+        return None
+    candidates = [text]
+    brace = text.find("{")
+    if brace > 0:
+        candidates.append(text[brace:].strip())
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
 @dataclass
 class TaskRuntimeContext:
     task_id: str
@@ -44,6 +64,8 @@ class RuntimeCollector:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._shared_serial: serial.Serial | None = None
+        self._decode_errors = 0
+        self._lock_stats = threading.Lock()
 
     def _get_or_create_ctx(self, task_id: str) -> TaskRuntimeContext:
         if task_id not in self.contexts:
@@ -58,9 +80,10 @@ class RuntimeCollector:
                 break
             if not line:
                 continue
-            try:
-                event = json.loads(line.decode("utf-8", errors="replace").strip())
-            except json.JSONDecodeError:
+            event = _try_parse_uart_json_line(line)
+            if event is None:
+                with self._lock_stats:
+                    self._decode_errors += 1
                 continue
 
             task_id = str(event.get("task_id", "")).strip()
@@ -97,14 +120,39 @@ class RuntimeCollector:
         ctx = self.contexts.get(task_id)
         return ctx is not None and ctx.status in TASK_TERMINAL_LIFECYCLE
 
-    def wait_for_task_terminal(self, task_id: str, timeout_s: float, poll_s: float = 0.2) -> bool:
-        """Block until lifecycle is terminal for task_id or timeout. Returns True if terminal seen."""
-        deadline = time.time() + max(0.1, timeout_s)
-        while time.time() < deadline:
+    def _debug_snapshot(self, task_id: str) -> dict:
+        ctx = self.contexts.get(task_id)
+        with self._lock_stats:
+            decode_errors = self._decode_errors
+        return {
+            "ctx_status": ctx.status if ctx else None,
+            "metrics_n": len(ctx.metrics) if ctx else 0,
+            "decode_errors": decode_errors,
+        }
+
+    def wait_for_task_terminal(
+        self,
+        task_id: str,
+        timeout_s: float | None = None,
+        poll_s: float = 0.2,
+        progress_log_s: float = 30.0,
+    ) -> bool:
+        deadline = None if timeout_s is None else time.time() + max(0.1, float(timeout_s))
+        last_prog = time.time()
+        while True:
             if self.is_task_terminal(task_id):
                 return True
+            if deadline is not None and time.time() >= deadline:
+                return False
             time.sleep(poll_s)
-        return False
+            if progress_log_s > 0 and time.time() - last_prog >= progress_log_s:
+                last_prog = time.time()
+                snap = self._debug_snapshot(task_id)
+                print(
+                    f"[telemetry] waiting for {task_id!r}: lifecycle={snap['ctx_status']!r} "
+                    f"metrics={snap['metrics_n']} uart_skipped_nonjson_lines={snap['decode_errors']}",
+                    flush=True,
+                )
 
 
 def _build_parser() -> argparse.ArgumentParser:

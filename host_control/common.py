@@ -67,7 +67,6 @@ def to_serializable(value: Any) -> Any:
 
 
 def aggregate_dram_from_metrics(metrics: list) -> dict[str, float]:
-    """Align with RK3588_LLM: init (first non-zero) + max total peak; runtime = peak - init."""
     rows = [m for m in metrics if m.get("type") == "metric"]
     init_ref = 0.0
     for m in rows:

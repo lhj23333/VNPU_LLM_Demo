@@ -58,7 +58,7 @@ class RuntimeBaseBuilder:
         if patched != content:
             cmake_file.write_text(patched, encoding="utf-8")
 
-    def build(self, llm_demo: Path | None = None, vlm_demo: Path | None = None) -> Path:
+    def build(self) -> Path:
         if self.output_dir.exists():
             shutil.rmtree(self.output_dir)
 
@@ -66,25 +66,6 @@ class RuntimeBaseBuilder:
         ensure_dir(self.output_dir / "lib")
         ensure_dir(self.output_dir / "executor")
         ensure_dir(self.output_dir / "scripts")
-
-        # Optional prebuilt binaries (e.g. cross-compiled elsewhere). Default workflow: omit both
-        # and run scripts/build_demos_on_device.sh on the board using staged _build_src.
-        if llm_demo is not None:
-            if not llm_demo.exists():
-                raise FileNotFoundError(
-                    f"--llm-demo path does not exist: {llm_demo}. "
-                    "Omit --llm-demo to pack sources only, then on device run scripts/build_demos_on_device.sh."
-                )
-            self._copy_required(llm_demo, self.output_dir / "bin" / "llm_demo")
-            (self.output_dir / "bin" / "llm_demo").chmod(0o755)
-        if vlm_demo is not None:
-            if not vlm_demo.exists():
-                raise FileNotFoundError(
-                    f"--vlm-demo path does not exist: {vlm_demo}. "
-                    "Omit --vlm-demo to pack sources only, then on device run scripts/build_demos_on_device.sh."
-                )
-            self._copy_required(vlm_demo, self.output_dir / "bin" / "vlm_demo")
-            (self.output_dir / "bin" / "vlm_demo").chmod(0o755)
 
         librkllmrt, librknnrt = self._resolve_runtime_libs()
         self._copy_required(librkllmrt, self.output_dir / "lib" / "librkllmrt.so")
@@ -184,8 +165,6 @@ class RuntimeBaseBuilder:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Build dist/runtime_base for Device deployment")
-    parser.add_argument("--llm-demo", help="Optional path to prebuilt llm_demo binary")
-    parser.add_argument("--vlm-demo", help="Optional path to prebuilt vlm_demo binary")
     parser.add_argument(
         "--output",
         default=str(HOST_RUNTIME_BASE_DIR),
@@ -198,9 +177,7 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
     builder = RuntimeBaseBuilder(Path(args.output).resolve())
-    llm_demo = Path(args.llm_demo).resolve() if args.llm_demo else None
-    vlm_demo = Path(args.vlm_demo).resolve() if args.vlm_demo else None
-    built_path = builder.build(llm_demo=llm_demo, vlm_demo=vlm_demo)
+    built_path = builder.build()
     print(f"Runtime base built at: {built_path}")
 
 

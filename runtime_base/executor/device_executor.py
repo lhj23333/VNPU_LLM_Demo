@@ -70,7 +70,14 @@ class DeviceExecutor:
         proc = launcher.launch(spec)
         probe = RuntimeProbe(emitter)
         try:
-            result = probe.run(task_id, proc, prompt, subtask_index=None, cancel_event=self._cancel)
+            result = probe.run(
+                task_id,
+                proc,
+                prompt,
+                subtask_index=None,
+                cancel_event=self._cancel,
+                init_dram_gate=spec.init_dram_gate,
+            )
         finally:
             if proc.poll() is None:
                 proc.kill()
@@ -132,7 +139,14 @@ class DeviceExecutor:
         proc = launcher.launch(spec)
         probe = RuntimeProbe(emitter)
         try:
-            result = probe.run(task_id, proc, prompt, subtask_index=None, cancel_event=self._cancel)
+            result = probe.run(
+                task_id,
+                proc,
+                prompt,
+                subtask_index=None,
+                cancel_event=self._cancel,
+                init_dram_gate=spec.init_dram_gate,
+            )
         finally:
             if proc.poll() is None:
                 proc.kill()
@@ -174,90 +188,124 @@ class DeviceExecutor:
         img_end = str(runtime.get("img_end", "<|vision_end|>"))
         img_content = str(runtime.get("img_content", "<|image_pad|>"))
 
+        raw_round = runtime.get("round", 1)
+        try:
+            bench_round = int(raw_round)
+        except (TypeError, ValueError):
+            bench_round = 1
+        if bench_round < 1:
+            bench_round = 1
+
+        n_sub = len(subtasks)
         combined_log: list[str] = []
-        for index, st in enumerate(subtasks):
+        for round_idx in range(bench_round):
             if self._cancel.is_set():
                 emitter.lifecycle(task_id, "stopped")
                 return
-            stype = str(st.get("type", ""))
-            if stype == "llm":
-                if not llm_bin.exists():
-                    emitter.log(task_id, "bin/llm_demo not found", level="error", subtask_index=index)
-                    emitter.lifecycle(task_id, "failed")
-                    return
-                prompt = str(st["prompt"]).strip()
-                spec = launcher.build_llm(llm_model_path, max_new_tokens, max_context_len, prompt)
-                proc = launcher.launch(spec)
-                try:
-                    result = probe.run(
-                        task_id, proc, prompt, subtask_index=index, cancel_event=self._cancel
-                    )
-                finally:
-                    if proc.poll() is None:
-                        proc.kill()
-                combined_log.append(f"=== subtask {index} llm ===\n{result.full_output}\n")
-                self._append_log_file(session_dir, f"subtask_{index:04d}.log", result.full_output)
-                if result.cancelled:
+            for index, st in enumerate(subtasks):
+                if self._cancel.is_set():
                     emitter.lifecycle(task_id, "stopped")
                     return
-                if not result.success:
-                    emitter.log(
-                        task_id,
-                        f"subtask {index} llm failed (code {result.returncode})",
-                        level="error",
-                        subtask_index=index,
+                global_index = round_idx * n_sub + index
+                stype = str(st.get("type", ""))
+                if stype == "llm":
+                    if not llm_bin.exists():
+                        emitter.log(
+                            task_id, "bin/llm_demo not found", level="error", subtask_index=global_index
+                        )
+                        emitter.lifecycle(task_id, "failed")
+                        return
+                    prompt = str(st["prompt"]).strip()
+                    spec = launcher.build_llm(llm_model_path, max_new_tokens, max_context_len, prompt)
+                    proc = launcher.launch(spec)
+                    try:
+                        result = probe.run(
+                            task_id,
+                            proc,
+                            prompt,
+                            subtask_index=global_index,
+                            cancel_event=self._cancel,
+                            init_dram_gate=spec.init_dram_gate,
+                        )
+                    finally:
+                        if proc.poll() is None:
+                            proc.kill()
+                    combined_log.append(
+                        f"=== round {round_idx + 1}/{bench_round} subtask {global_index} (slot {index}) llm ===\n"
+                        f"{result.full_output}\n"
                     )
-                    emitter.lifecycle(task_id, "failed")
-                    return
-            elif stype == "vlm":
-                if not vlm_bin.exists():
-                    emitter.log(task_id, "bin/vlm_demo not found", level="error", subtask_index=index)
-                    emitter.lifecycle(task_id, "failed")
-                    return
-                if vision_path is None:
-                    emitter.log(task_id, "benchmark vlm requires vision_model", level="error")
-                    emitter.lifecycle(task_id, "failed")
-                    return
-                image_path = session_dir / str(st["image"])
-                prompt = str(st["prompt"]).strip()
-                spec = launcher.build_vlm(
-                    image_path,
-                    vision_path,
-                    llm_model_path,
-                    prompt,
-                    max_new_tokens,
-                    max_context_len,
-                    rknn_core_num,
-                    img_start,
-                    img_end,
-                    img_content,
-                )
-                proc = launcher.launch(spec)
-                try:
-                    result = probe.run(
-                        task_id, proc, prompt, subtask_index=index, cancel_event=self._cancel
+                    self._append_log_file(session_dir, f"subtask_{global_index:04d}.log", result.full_output)
+                    if result.cancelled:
+                        emitter.lifecycle(task_id, "stopped")
+                        return
+                    if not result.success:
+                        emitter.log(
+                            task_id,
+                            f"round {round_idx + 1} subtask {global_index} llm failed (code {result.returncode})",
+                            level="error",
+                            subtask_index=global_index,
+                        )
+                        emitter.lifecycle(task_id, "failed")
+                        return
+                elif stype == "vlm":
+                    if not vlm_bin.exists():
+                        emitter.log(
+                            task_id, "bin/vlm_demo not found", level="error", subtask_index=global_index
+                        )
+                        emitter.lifecycle(task_id, "failed")
+                        return
+                    if vision_path is None:
+                        emitter.log(task_id, "benchmark vlm requires vision_model", level="error")
+                        emitter.lifecycle(task_id, "failed")
+                        return
+                    image_path = session_dir / str(st["image"])
+                    prompt = str(st["prompt"]).strip()
+                    spec = launcher.build_vlm(
+                        image_path,
+                        vision_path,
+                        llm_model_path,
+                        prompt,
+                        max_new_tokens,
+                        max_context_len,
+                        rknn_core_num,
+                        img_start,
+                        img_end,
+                        img_content,
                     )
-                finally:
-                    if proc.poll() is None:
-                        proc.kill()
-                combined_log.append(f"=== subtask {index} vlm ===\n{result.full_output}\n")
-                self._append_log_file(session_dir, f"subtask_{index:04d}.log", result.full_output)
-                if result.cancelled:
-                    emitter.lifecycle(task_id, "stopped")
-                    return
-                if not result.success:
-                    emitter.log(
-                        task_id,
-                        f"subtask {index} vlm failed (code {result.returncode})",
-                        level="error",
-                        subtask_index=index,
+                    proc = launcher.launch(spec)
+                    try:
+                        result = probe.run(
+                            task_id,
+                            proc,
+                            prompt,
+                            subtask_index=global_index,
+                            cancel_event=self._cancel,
+                            init_dram_gate=spec.init_dram_gate,
+                        )
+                    finally:
+                        if proc.poll() is None:
+                            proc.kill()
+                    combined_log.append(
+                        f"=== round {round_idx + 1}/{bench_round} subtask {global_index} (slot {index}) vlm ===\n"
+                        f"{result.full_output}\n"
                     )
+                    self._append_log_file(session_dir, f"subtask_{global_index:04d}.log", result.full_output)
+                    if result.cancelled:
+                        emitter.lifecycle(task_id, "stopped")
+                        return
+                    if not result.success:
+                        emitter.log(
+                            task_id,
+                            f"round {round_idx + 1} subtask {global_index} vlm failed (code {result.returncode})",
+                            level="error",
+                            subtask_index=global_index,
+                        )
+                        emitter.lifecycle(task_id, "failed")
+                        return
+                else:
+                    emitter.log(task_id, f"unsupported subtask type: {stype}", level="error")
                     emitter.lifecycle(task_id, "failed")
                     return
-            else:
-                emitter.log(task_id, f"unsupported subtask type: {stype}", level="error")
-                emitter.lifecycle(task_id, "failed")
-                return
 
         self._append_log_file(session_dir, "run_output.log", "".join(combined_log))
         emitter.lifecycle(task_id, "finished")

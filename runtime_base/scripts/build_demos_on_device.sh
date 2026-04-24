@@ -2,6 +2,7 @@
 # Build llm_demo / vlm_demo on the device from staged third-party sources (_build_src).
 # Host `build-runtime-base` (without --llm-demo/--vlm-demo) packs sources + aarch64 libs;
 # run this script once on the board before starting device_executor.
+# Rebuild after changing demo sources (e.g. VNPU_LLM_INITDRAM_GATE in main.cpp / llm_demo.cpp for Init DRAM sampling).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"

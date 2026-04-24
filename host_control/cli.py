@@ -34,14 +34,6 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     rb = subparsers.add_parser("build-runtime-base")
-    rb.add_argument(
-        "--llm-demo",
-        help="Optional prebuilt llm_demo; omit and use device scripts/build_demos_on_device.sh",
-    )
-    rb.add_argument(
-        "--vlm-demo",
-        help="Optional prebuilt vlm_demo; omit and use device scripts/build_demos_on_device.sh",
-    )
     rb.add_argument("--output")
 
     bllm = subparsers.add_parser("build-task-llm")
@@ -107,8 +99,9 @@ def _parser() -> argparse.ArgumentParser:
     exec_cmd.add_argument(
         "--collect-seconds",
         type=int,
-        default=180,
-        help="Max seconds to wait; ends as soon as device reports task finished/failed/stopped",
+        default=None,
+        metavar="N",
+        help="Optional cap in seconds; default is unlimited wait until device reports finished/failed/stopped",
     )
     exec_cmd.add_argument(
         "--results-dir",
@@ -133,9 +126,7 @@ def main() -> None:
 
     if args.command == "build-runtime-base":
         builder = RuntimeBaseBuilder(Path(args.output).resolve()) if args.output else RuntimeBaseBuilder()
-        llm_demo = Path(args.llm_demo).resolve() if args.llm_demo else None
-        vlm_demo = Path(args.vlm_demo).resolve() if args.vlm_demo else None
-        out = builder.build(llm_demo=llm_demo, vlm_demo=vlm_demo)
+        out = builder.build()
         print(f"Runtime base built: {out}")
         return
 
@@ -242,12 +233,20 @@ def main() -> None:
         host_cpu_tracker.start()
         try:
             controller.run_task(args.task_id)
-            max_wait = max(1, args.collect_seconds)
-            print(f"Waiting for task {args.task_id!r} (max {max_wait}s, ends early on finished/failed/stopped)...", flush=True)
-            if collector.wait_for_task_terminal(args.task_id, timeout_s=float(max_wait)):
+            if args.collect_seconds is None:
+                print(f"Waiting for task {args.task_id!r} (until finished/failed/stopped)...", flush=True)
+                collector.wait_for_task_terminal(args.task_id, timeout_s=None)
                 print("Device reported terminal lifecycle; collecting result.", flush=True)
             else:
-                print("Timed out waiting for terminal lifecycle; saving partial telemetry if any.", flush=True)
+                max_wait = max(1, args.collect_seconds)
+                print(
+                    f"Waiting for task {args.task_id!r} (max {max_wait}s, ends early on finished/failed/stopped)...",
+                    flush=True,
+                )
+                if collector.wait_for_task_terminal(args.task_id, timeout_s=float(max_wait)):
+                    print("Device reported terminal lifecycle; collecting result.", flush=True)
+                else:
+                    print("Timed out waiting for terminal lifecycle; saving partial telemetry if any.", flush=True)
         finally:
             collector.stop()
             controller.close()

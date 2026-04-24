@@ -1,14 +1,12 @@
-# Device Runbook (Runtime Base + Sessions)
+# 📖 板端运维手册 (Device Runbook: Runtime Base + Sessions)
 
-## 1. Device Runtime Base Layout
+## 1. 运行时底座布局 (Device Runtime Base Layout)
 
-After Host deploys `dist/runtime_base/` to Device path `vnpu_llm/runtime_base`, expected tree:
+在 Host 控制端将打包好的 `dist/runtime_base/` 部署至 Device (板端) 指定路径 (例如 `vnpu_llm/runtime_base`) 后，期望的目录结构如下：
 
 ```text
 /userdata/vnpu_llm/runtime_base/
   bin/
-    llm_demo
-    vlm_demo
   lib/
     librkllmrt.so
     librknnrt.so
@@ -26,23 +24,22 @@ After Host deploys `dist/runtime_base/` to Device path `vnpu_llm/runtime_base`, 
   _build_src/
     rknn-llm/   # staged sources + headers for on-device cmake build
 ```
-
-If `bin/llm_demo` and `bin/vlm_demo` are missing (typical when Host did not pass `--llm-demo` / `--vlm-demo`), compile them on the device once:
+推送完 runtime base 后，请务必在板端手动执行以下命令，在目标机器上本地编译出 `bin/llm_demo` 与 `bin/vlm_demo` C++ 运行时：
 
 ```bash
 cd /userdata/vnpu_llm/runtime_base
-sudo bash ./scripts/build_demos_on_device.sh
+bash ./scripts/build_demos_on_device.sh
 ```
 
-Requires: `cmake`, a C++ toolchain, and OpenMP dev package matching your OS image (e.g. `libomp-dev` or distro equivalent).
+**前置依赖**: 需要 `cmake`，C++ 工具链，以及与您的 OS 镜像匹配的 OpenMP 开发包（如 Ubuntu/Debian 下的 `libomp-dev`）。
 
-## 2. Start Executor Service Loop
+## 2. 启动 Executor 常驻服务 (Start Executor Service Loop)
 
 ```bash
 cd /userdata/vnpu_llm/runtime_base
 source ./scripts/env_setup.sh
 
-# Optional for benchmark consistency
+# 强烈建议执行：锁定 NPU/CPU 频率以保证 benchmark 跑分稳定性
 sudo bash ./scripts/fix_freq_rk3588.sh
 
 python3 executor/device_executor.py \
@@ -50,11 +47,11 @@ python3 executor/device_executor.py \
   --sessions-root /userdata/vnpu_llm/sessions
 ```
 
-The process continuously reads command JSON lines from stdin and emits telemetry JSON lines to stdout.
+启动后，该 Python 进程将持续从标准输入 (或串口) 读取 JSON 格式的指令，并将 Telemetry 遥测数据以 JSON Lines 的形式发射至标准输出。
 
-## 3. Session Directory Contract
+## 3. 会话目录契约 (Session Directory Contract)
 
-Host must stage each task bundle to:
+Host 控制端在下发任务前，必须将 Task Bundle 按以下结构推送到板端：
 
 ```text
 /userdata/vnpu_llm/sessions/<task_id>/
@@ -63,18 +60,18 @@ Host must stage each task bundle to:
   inputs/
 ```
 
-Executor writes runtime artifacts to:
+Executor 运行期间，会将运行时产生的日志与输出产物写入：
 
 ```text
 /userdata/vnpu_llm/sessions/<task_id>/
   logs/
     run_output.log
-    subtask_0000.log   # benchmark_batch only, one per subtask
+    subtask_0000.log   # 仅在 benchmark_batch 模式下生成，每个 subtask 对应一个 log
 ```
 
-## 4. UART Command Contract
+## 4. UART 控制指令契约 (UART Command Contract)
 
-Accepted commands:
+系统接受的 JSON 指令格式如下：
 
 ```json
 {"cmd":"run_task","task_id":"task_001"}
@@ -84,17 +81,17 @@ Accepted commands:
 {"cmd":"ping"}
 ```
 
-`cleanup_task` without `task_id` removes every subdirectory under `--sessions-root` (after stopping the current task if one is running).
+> **提示:** 如果调用 `cleanup_task` 但未指定 `task_id`，系统将在停止当前正在运行的任务后，强制清空 `--sessions-root` 目录下的所有子文件夹。
 
-## 5. Health Checks
+## 5. 健康检查 (Health Checks)
 
-- NPU node:
+- **检查 NPU 节点挂载状态**:
 
 ```bash
 ls -l /dev/rknn
 ```
 
-- Runtime dependencies:
+- **检查运行时动态库依赖 (依赖 `librkllmrt.so` 等是否正常链接)**:
 
 ```bash
 ldd /userdata/vnpu_llm/runtime_base/bin/llm_demo
