@@ -1,9 +1,11 @@
 import argparse
 import json
 import threading
+import sys
 from dataclasses import dataclass
 
 import serial
+from serial.serialutil import SerialException
 
 
 @dataclass(frozen=True)
@@ -19,15 +21,26 @@ class SerialConfig:
 
 def open_serial_port(config: SerialConfig) -> serial.Serial:
     """Open one UART handle (use a single instance for read + write on Linux)."""
-    return serial.Serial(
-        port=config.port,
-        baudrate=config.baudrate,
-        bytesize=config.bytesize,
-        parity=config.parity,
-        stopbits=config.stopbits,
-        timeout=config.read_timeout_s,
-        write_timeout=config.write_timeout_s,
-    )
+    try:
+        return serial.Serial(
+            port=config.port,
+            baudrate=config.baudrate,
+            bytesize=config.bytesize,
+            parity=config.parity,
+            stopbits=config.stopbits,
+            timeout=config.read_timeout_s,
+            write_timeout=config.write_timeout_s,
+        )
+    except PermissionError:
+        print(f"[Error] Unable to access serial port {config.port}: Permission denied, please run with sudo permission.")
+        sys.exit(1)
+    except SerialException as e:
+        print(f"[Error] Serial port initialization failed ({config.port}): {e}")
+        print("Please check if the device is connected, or the baud rate parameter is correct.")
+        sys.exit(1)
+    except Exception as e:
+        print(f"[Error] Unknown serial port error: {e}")
+        sys.exit(1)
 
 
 class RunController:

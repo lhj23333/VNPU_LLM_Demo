@@ -2,6 +2,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,8 +35,12 @@ def _read_proc_status_value_mb(pid: int, key: str) -> float:
                 if line.startswith(key):
                     kb = float(line.split()[1])
                     return kb / 1024.0
-    except Exception:
-        return 0.0
+    except ProcessLookupError:
+        pass
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f"[Probe Warning] Unable to read process status, Error: {e}", file=sys.stderr)
     return 0.0
 
 
@@ -82,8 +87,13 @@ class RuntimeProbe:
     def _write_prompt(process: subprocess.Popen, prompt: str) -> None:
         if process.stdin is None:
             raise RuntimeError("Process stdin is not available")
-        process.stdin.write((prompt + "\n").encode("utf-8"))
-        process.stdin.flush()
+        try:
+            process.stdin.write((prompt + "\n").encode("utf-8"))
+            process.stdin.flush()
+        except BrokenPipeError:
+            print("[Probe Warning] Attempting to write prompt to closed process pipe.", file=sys.stderr)
+        except Exception as e:
+            print(f"[Probe Warning] Failed to write prompt: {e}", file=sys.stderr)
 
     @staticmethod
     def _unlock_init_dram_gate(process: subprocess.Popen) -> None:
@@ -92,8 +102,10 @@ class RuntimeProbe:
         try:
             process.stdin.write(b"\n")
             process.stdin.flush()
-        except Exception:
-            pass
+        except BrokenPipeError:
+            print("[Probe Warning] Attempting to write data to closed process pipe (init_dram_gate).", file=sys.stderr)
+        except Exception as e:
+            print(f"[Probe Warning] Failed to write command: {e}", file=sys.stderr)
 
     def run(
         self,
@@ -101,7 +113,7 @@ class RuntimeProbe:
         process: subprocess.Popen,
         prompt: str,
         subtask_index: Optional[int] = None,
-        cancel_event=None,
+        cancel_event: Optional[threading.Event] = None,
         init_dram_gate: bool = True,
     ) -> ProbeResult:
         start = time.time()
@@ -225,12 +237,11 @@ class RuntimeProbe:
             if process.stdin is not None:
                 process.stdin.write(b"exit\n")
                 process.stdin.flush()
-        except Exception:
-            pass
+        except BrokenPipeError:
+            print("[Probe Warning] Attempting to write data to closed process pipe (exit).", file=sys.stderr)
+        except Exception as e:
+            print(f"[Probe Warning] Failed to write exit command: {e}", file=sys.stderr)
 
-        # RKLLM often flushes the Prefill/Generate table and Peak Memory lines AFTER the
-        # trailing "user:" prompt. Those bytes arrive in communicate() remainder; parsing
-        # before merge yields TPS=0 and Peak=0 (then DRAM totals diverge from RK3588_LLM).
         try:
             remainder, _ = process.communicate(timeout=120)
         except subprocess.TimeoutExpired:

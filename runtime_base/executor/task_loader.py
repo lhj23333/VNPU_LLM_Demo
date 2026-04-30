@@ -44,6 +44,14 @@ class TaskLoader:
     def __init__(self, session_dir: Path):
         self.session_dir = session_dir
 
+    def _safe_resolve_path(self, rel_path: str) -> Path:
+        """Safely resolve path to prevent directory traversal vulnerabilities"""
+        base_dir = self.session_dir.resolve()
+        target_path = (base_dir / str(rel_path)).resolve()
+        if not str(target_path).startswith(str(base_dir)):
+            raise PermissionError(f"Security violation: path attempted to escape working directory! ({rel_path})")
+        return target_path
+
     def _validate_common(self, data: Dict[str, Any]) -> None:
         mode = data.get("mode")
         if mode not in self.REQUIRED_FIELDS:
@@ -66,7 +74,7 @@ class TaskLoader:
                 raise ValueError("benchmark_batch requires model.llm_model")
 
         for key, rel_path in model.items():
-            path = self.session_dir / str(rel_path)
+            path = self._safe_resolve_path(rel_path)
             if not path.exists():
                 raise FileNotFoundError(f"Model path does not exist ({key}): {path}")
 
@@ -76,7 +84,7 @@ class TaskLoader:
             image_rel = str(data["input"].get("image", "")).strip()
             if not image_rel:
                 raise ValueError("vlm_single requires input.image")
-            image_path = self.session_dir / image_rel
+            image_path = self._safe_resolve_path(image_rel)
             if not image_path.exists():
                 raise FileNotFoundError(f"input.image does not exist: {image_path}")
         if mode == "benchmark_batch":
@@ -93,7 +101,7 @@ class TaskLoader:
                     prompt = str(subtask.get("prompt", "")).strip()
                     if not image_rel or not prompt:
                         raise ValueError(f"subtasks[{index}] vlm requires image and prompt")
-                    image_path = self.session_dir / image_rel
+                    image_path = self._safe_resolve_path(image_rel)
                     if not image_path.exists():
                         raise FileNotFoundError(f"subtasks[{index}] image does not exist: {image_path}")
                 else:

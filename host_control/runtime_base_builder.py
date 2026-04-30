@@ -58,6 +58,28 @@ class RuntimeBaseBuilder:
         if patched != content:
             cmake_file.write_text(patched, encoding="utf-8")
 
+    def _patch_initdram_gate(self, cpp_file: Path) -> None:
+        if not cpp_file.exists():
+            return
+        content = cpp_file.read_text(encoding="utf-8", errors="replace")
+        
+        target_str = 'printf("rkllm init success\\n");'
+        
+        patch_str = (
+            'printf("rkllm init success\\n");\n'
+            '        fflush(stdout);\n'
+            '        if (getenv("VNPU_LLM_INITDRAM_GATE")) {\n'
+            '            printf("VNPU_LLM_INITDRAM_GATE\\n");\n'
+            '            fflush(stdout);\n'
+            '            (void)fgetc(stdin);\n'
+            '        }'
+        )
+        
+        if target_str in content:
+            patched = content.replace(target_str, patch_str)
+            if patched != content:
+                cpp_file.write_text(patched, encoding="utf-8")
+
     def build(self) -> Path:
         if self.output_dir.exists():
             shutil.rmtree(self.output_dir)
@@ -153,6 +175,14 @@ class RuntimeBaseBuilder:
         # Patch upstream multimodal CMake warning (header passed as include dir)
         self._patch_multimodal_cmake_include(
             build_src_root / "examples" / "multimodal_model_demo" / "deploy" / "CMakeLists.txt"
+        )
+
+        # ====== Patch upstream main.cpp and llm_demo.cpp for Init DRAM sampling gate ======
+        self._patch_initdram_gate(
+            build_src_root / "examples" / "rkllm_api_demo" / "deploy" / "src" / "llm_demo.cpp"
+        )
+        self._patch_initdram_gate(
+            build_src_root / "examples" / "multimodal_model_demo" / "deploy" / "src" / "main.cpp"
         )
 
         device_executor = self.output_dir / "executor" / "device_executor.py"
